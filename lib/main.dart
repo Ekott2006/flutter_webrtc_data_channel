@@ -3,9 +3,9 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:http/http.dart' as http;
+import 'package:network_info_plus/network_info_plus.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_cors_headers/shelf_cors_headers.dart';
@@ -81,23 +81,38 @@ class _MyHomePageState extends State<MyHomePage> {
                     child: const Text("Start Server"),
                     onPressed: () async {
                       // TODO: Start Server
-                      await webService.startServer(signaling);
+                      final ipAddress = await webService.gettingIP();
+                      if (ipAddress == null) return;
+                      await webService.startServer(signaling, ipAddress);
+                      showDialog(
+                          context: context,
+                          builder: (BuildContext context) {
+                            return AlertDialog(
+                              title: const Text("Server Successfully Started"),
+                              content: Text("IP Address is " + ipAddress),
+                            );
+                          });
                     },
                   ),
                   Flexible(
                     child: TextField(
                       controller: _serverTextController,
-                      inputFormatters: <TextInputFormatter>[
-                        FilteringTextInputFormatter.digitsOnly
-                      ],
-                      maxLength: 3,
-                      maxLengthEnforcement: MaxLengthEnforcement.enforced,
                     ),
                   ),
                   TextButton(
                     onPressed: () async {
                       // TODO: Join Server
-                      await webService.joinServer(signaling);
+                      await webService.joinServer(
+                          signaling, _serverTextController.text);
+                      showDialog(
+                          context: context,
+                          builder: (BuildContext context) {
+                            return const AlertDialog(
+                              title: Text("Success"),
+                              content:
+                                  const Text("WebRTC Successfully Connected"),
+                            );
+                          });
                     },
                     child: const Text("Join Server"),
                   ),
@@ -202,7 +217,8 @@ class Helper {
 }
 
 class WebService {
-  startServer(Signaling signaling) async {
+  final port = 8083;
+  startServer(Signaling signaling, String? ipAddress) async {
     final router = shelf_router.Router();
     var handler =
         const Pipeline().addMiddleware(corsHeaders()).addHandler(router.call);
@@ -219,6 +235,7 @@ class WebService {
 
       await Future.delayed(
           const Duration(seconds: 2)); // Wait for ICE Candidates
+          print(signaling.candidates.first.toMap());
 
       var response = jsonEncode(<String, dynamic>{
         ...answer.toMap(),
@@ -228,19 +245,20 @@ class WebService {
       return Response.ok(response,
           headers: {'Content-Type': 'application/json'});
     });
-    await shelf_io.serve(handler.call, 'localhost', 8083);
+    await shelf_io.serve(handler.call, ipAddress ?? 'localhost', port);
     print("Server Started");
   }
 
-  joinServer(Signaling signaling) async {
-    final url = Uri.parse("http://localhost:8083/");
+  joinServer(Signaling signaling, String ipAddress) async {
+    final url = Uri.parse("http://$ipAddress:$port/");
+    final sdp = (await signaling.createOffer()).toMap();
     await Future.delayed(const Duration(seconds: 2));
+    print(signaling.candidates.first.toMap());
 
     final Map<String, dynamic> body = {
-      ...(await signaling.createOffer()).toMap(),
+      ...sdp,
       ...signaling.candidates.first.toMap()
     };
-    await Future.delayed(const Duration(seconds: 2));
     var response = await http.post(url, body: jsonEncode(body));
     final payload = jsonDecode(response.body);
     await signaling
@@ -249,5 +267,12 @@ class WebService {
           payload['candidate'], payload['sdpMid'], payload['sdpMLineIndex'])
     ]);
     print('Response body: ${response.body}');
+  }
+
+  Future<String?> gettingIP() async {
+    // await Permission.location.request();
+    final info = NetworkInfo();
+    var hostAddress = await info.getWifiIP();
+    return hostAddress;
   }
 }
